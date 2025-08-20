@@ -15,7 +15,7 @@ brush_thickness = 7
 eraser_thickness = 50
 prev_x, prev_y = 0, 0
 
-# Colors (add more)
+# Color palette
 colors = {
     "Purple": (255, 0, 255),
     "Green": (0, 255, 0),
@@ -27,7 +27,6 @@ colors = {
     "Eraser": (0, 0, 0)
 }
 
-# Button positions and radii
 color_buttons = {
     "Purple": (50, 50),
     "Green": (130, 50),
@@ -40,8 +39,18 @@ color_buttons = {
 }
 button_radius = 30
 
-# Undo stack
+# Undo/Redo stack
 undo_stack = []
+redo_stack = []
+max_stack = 20  # Max history
+
+# Tool buttons
+tool_buttons = {
+    "Undo": (50, 130),
+    "Redo": (150, 130),
+    "Clear": (250, 130),
+    "Save": (350, 130)
+}
 
 # -------------------- Functions --------------------
 def draw_color_buttons(img, selected_color):
@@ -49,9 +58,21 @@ def draw_color_buttons(img, selected_color):
         color = colors[name]
         thickness = 4 if color == selected_color else -1
         cv2.circle(img, pos, button_radius, color, thickness)
-        if thickness != -1:  # Draw inner filled circle for selection
+        if thickness != -1:
             cv2.circle(img, pos, button_radius-5, color, -1)
-        cv2.putText(img, name, (pos[0]-25, pos[1]+50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+        cv2.putText(img, name, (pos[0]-25, pos[1]+50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+
+def draw_tool_buttons(img):
+    for name, pos in tool_buttons.items():
+        cv2.rectangle(img, (pos[0]-30, pos[1]-20), (pos[0]+30, pos[1]+20), (50,50,50), -1)
+        cv2.putText(img, name, (pos[0]-25, pos[1]+7),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
+
+def save_canvas(canvas_img):
+    filename = "drawing.png"
+    cv2.imwrite(filename, canvas_img)
+    print(f"Saved as {filename}")
 
 # -------------------- Main Loop --------------------
 cap = cv2.VideoCapture(0)
@@ -71,6 +92,7 @@ while True:
     result = hands.process(rgb)
 
     draw_color_buttons(frame, brush_color)
+    draw_tool_buttons(frame)
 
     if result.multi_hand_landmarks:
         for hand_landmarks in result.multi_hand_landmarks:
@@ -83,26 +105,42 @@ while True:
 
             x1, y1 = lm_list[8]  # Index tip
             x2, y2 = lm_list[4]  # Thumb tip
-
             pinch = abs(x1 - x2) < 40 and abs(y1 - y2) < 40
 
-            # Check color selection
+            # Color selection
             for name, pos in color_buttons.items():
                 dist = np.hypot(x1 - pos[0], y1 - pos[1])
                 if dist < button_radius:
                     brush_color = colors[name]
 
+            # Tool buttons
+            for name, pos in tool_buttons.items():
+                if pos[0]-30 < x1 < pos[0]+30 and pos[1]-20 < y1 < pos[1]+20:
+                    if name=="Undo" and undo_stack:
+                        redo_stack.append(canvas.copy())
+                        canvas = undo_stack.pop()
+                    elif name=="Redo" and redo_stack:
+                        undo_stack.append(canvas.copy())
+                        canvas = redo_stack.pop()
+                    elif name=="Clear":
+                        undo_stack.append(canvas.copy())
+                        canvas = np.zeros_like(frame)
+                    elif name=="Save":
+                        save_canvas(canvas)
+
             # Drawing
             if not pinch:
-                if prev_x == 0 and prev_y == 0:
+                if prev_x==0 and prev_y==0:
                     prev_x, prev_y = x1, y1
-                thickness = eraser_thickness if brush_color == (0,0,0) else brush_thickness
+                thickness = eraser_thickness if brush_color==(0,0,0) else brush_thickness
+                undo_stack.append(canvas.copy()) if len(undo_stack)<max_stack else undo_stack.pop(0)
+                redo_stack.clear()
                 cv2.line(canvas, (prev_x, prev_y), (x1, y1), brush_color, thickness)
                 prev_x, prev_y = x1, y1
             else:
                 prev_x, prev_y = 0, 0
 
-            # Draw brush indicator
+            # Brush indicator
             indicator_radius = eraser_thickness if brush_color==(0,0,0) else brush_thickness
             cv2.circle(frame, (x1, y1), indicator_radius, brush_color, 2)
 
@@ -117,13 +155,24 @@ while True:
     cv2.imshow("Virtual Drawing App", frame)
     key = cv2.waitKey(1)
 
+    # Keyboard controls
     if key == ord('q'):
         break
     elif key == ord('c'):
-        canvas = np.zeros_like(frame)  # Clear
-        undo_stack = []
+        undo_stack.append(canvas.copy())
+        canvas = np.zeros_like(frame)
     elif key == ord('u') and undo_stack:
-        canvas = undo_stack.pop()  # Undo
+        redo_stack.append(canvas.copy())
+        canvas = undo_stack.pop()
+    elif key == ord('r') and redo_stack:
+        undo_stack.append(canvas.copy())
+        canvas = redo_stack.pop()
+    elif key == ord('+'):
+        brush_thickness += 1
+    elif key == ord('-') and brush_thickness>1:
+        brush_thickness -= 1
+    elif key == ord('s'):
+        save_canvas(canvas)
 
 cap.release()
 cv2.destroyAllWindows()
